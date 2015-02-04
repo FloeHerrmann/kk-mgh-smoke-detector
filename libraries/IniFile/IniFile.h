@@ -6,7 +6,6 @@
 #define INI_FILE_MAX_FILENAME_LEN 26
 
 #include "SD.h"
-#include "Ethernet.h"
 
 class IniFileState;
 
@@ -84,14 +83,6 @@ public:
   // Get a float value
   bool getValue(const char* section, const char* key,
 		   char* buffer, size_t len, float& val) const;
-  
-  bool getIPAddress(const char* section, const char* key,
-		       char* buffer, size_t len, uint8_t* ip) const;
-  
-#if defined(ARDUINO) && ARDUINO >= 100
-  bool getIPAddress(const char* section, const char* key,
-		       char* buffer, size_t len, IPAddress& ip) const;
-#endif
 
   bool getMACAddress(const char* section, const char* key,
 			char* buffer, size_t len, uint8_t mac[6]) const;
