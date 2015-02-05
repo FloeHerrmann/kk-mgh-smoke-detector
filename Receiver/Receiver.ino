@@ -64,16 +64,17 @@ void setup(){
 					WiFiDeleteOldProfiles();
 					
 					// Verbindung zum konfigurierten WiFi herstellen
-					WiFiConnectToNetwork();
+					bool isConnected = WiFiConnectToNetwork();
 
-					// IP per DHCP beziehen
-					WiFiCheckDHCP();
+					if( isConnected ) {
+						// IP per DHCP beziehen
+						WiFiCheckDHCP();
 
-
-
-					uint8_t httpState;
-					String httpContent;
-					HttpGetRequest( "www.pro-kitchen.net" , "/demo/serverTime.do" , httpState , httpContent );
+						// Datum und Uhrzeit vom Server holen
+						uint8_t httpState;
+						String httpContent;
+						HttpGetRequest( "www.pro-kitchen.net" , "/demo/serverTime.do" , httpState , httpContent );
+					}
 				}
 			}
 
