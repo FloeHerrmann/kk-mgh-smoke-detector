@@ -27,6 +27,7 @@ char ApplicationBuffer[ ApplicationBufferSize ];
 
 // WIFI Objekt
 Adafruit_CC3000 wifi = Adafruit_CC3000( WIFI_SELECT , WIFI_IRQ , WIFI_VBAT , SPI_CLOCK_DIVIDER );
+Adafruit_CC3000_Client wifiClient;
 
 void setup(){
 
@@ -37,24 +38,42 @@ void setup(){
 	Serial << " Intelligenter Rauchmelder - Empfangsstation" << endl;
 	Serial << "* * * * * * * * * * * * * * * * * * * * * * * * * * * * *" << endl;
 
-	// SD Karte initialisieren
-	bool isInitialized = SDCardInitialize();
+	WatchdogDisable();
 
-	// Überprüfen ob Datei config.ini vorhanden ist
+	// SD Harware initialisieren
+	bool isInitialized = SDCardInitialize();
 	if( isInitialized ) {
 		Serial << F( "[" ) << millis() << F( "] ") << F( "Datei 'config.ini' vorhanden..." );
+
+		// Überprüfen ob die Datei config.ini existiert
 		if( SD.exists( "config.ini") ) {
 			Serial << F( "OK" ) << endl;
 			
 			// Einstellungen aus der config.ini laden
 			bool isLoaded = SDCardLoadConfiguration();
 			if( isLoaded ) {
+
+				// WiFi Hardware initialisieren
 				isInitialized = WiFiInitialize();
 				if( isInitialized ) {
+					
+					// MAC Adresse des WiFi Chips
 					WiFiGetMacAddress();
+					
+					// Alte Verbindungsprofile löschen
 					WiFiDeleteOldProfiles();
+					
+					// Verbindung zum konfigurierten WiFi herstellen
 					WiFiConnectToNetwork();
+
+					// IP per DHCP beziehen
 					WiFiCheckDHCP();
+
+
+
+					uint8_t httpState;
+					String httpContent;
+					HttpGetRequest( "www.pro-kitchen.net" , "/demo/serverTime.do" , httpState , httpContent );
 				}
 			}
 
@@ -64,7 +83,7 @@ void setup(){
 	}
 
 	// Watchdog starten (5 Sekunden)
-	WatchdogInitialize();
+	// WatchdogInitialize();
 
 }
 
@@ -72,6 +91,8 @@ void loop() {
 
 	// Test des Watchdogs
 	delay( 1000 );
+	
+	/*
 	if( millis() > 40000 ) {
 		for(;;){
 			Serial << millis() << endl;	
@@ -79,7 +100,7 @@ void loop() {
 		}
 	}
 	WatchdogReset();
-
+	*/
 }
 
 // WiFi Modul initialisieren
@@ -122,6 +143,7 @@ bool WiFiDeleteOldProfiles(){
 	}
 }
 
+// Verbindung zum konfigurierten WiFi herstellen
 bool WiFiConnectToNetwork(){
 
 	Serial << F( "[" ) << millis() << F( "] ") << F( "WiFi Modul - Verbindung herstellen..." );
@@ -133,9 +155,9 @@ bool WiFiConnectToNetwork(){
 		Serial << F( "FEHLER (DELETE)" ) << endl;
 		return false;
 	}
-
 }
 
+// IP Adresse, etc. vom DHCP Server beziehen
 bool WiFiCheckDHCP(){
 
 	Serial << F( "[" ) << millis() << F( "] ") << F( "WiFi Modul - DHCP Konfiguration..." );
@@ -170,7 +192,7 @@ bool WiFiCheckDHCP(){
 	return true;
 }
 
-// Verbindung zur SD Karte initialisieren
+// Hardware für SD Karte initialisieren
 bool SDCardInitialize(){
 
 	Serial << F( "[" ) << millis() << F( "] ") << F( "SD Karte initialisieren..." );
@@ -204,37 +226,38 @@ bool SDCardLoadConfiguration() {
 		if( configFile.validate( ApplicationBuffer , ApplicationBufferSize ) ) {
 			Serial << F( "OK" ) << endl;
 
+			Serial << F( "[" ) << millis() << F( "] " ) << F( "WiFi SSID: " );
 			if( configFile.getValue( "WIFI" , "ssid" , ApplicationBuffer , ApplicationBufferSize ) ){
 				strcpy( WiFiSSID , ApplicationBuffer );
-				Serial << F( "[" ) << millis() << F( "] " ) << F( "WiFi SSID: " ) << WiFiSSID << endl;
+				Serial << WiFiSSID << endl;
 			} else {
 				Serial << F( "FEHLER (SSID)" ) << endl;
 				return false;
 			}
 
+			Serial << F( "[" ) << millis() << F( "] " ) << F( "WiFi Passphrase: " );
 			if( configFile.getValue( "WIFI" , "pass" , ApplicationBuffer , ApplicationBufferSize ) ){
 				strcpy( WiFiPassphrase , ApplicationBuffer );
-				Serial << F( "[" ) << millis() << F( "] " ) << F( "WiFi Passphrase: " ) << WiFiPassphrase << endl;
+				Serial << WiFiPassphrase << endl;
 			} else {
 				Serial << F( "FEHLER (PASS)" ) << endl;
 				return false;
 			}
 
+			Serial << F( "[" ) << millis() << F( "] " ) << F( "WiFi Security: " );
 			if( configFile.getValue( "WIFI" , "sec" , ApplicationBuffer , ApplicationBufferSize ) ){
-
-				Serial << F( "[" ) << millis() << F( "] " ) << F( "WiFi Security: " );
 				if( strcmp( ApplicationBuffer , "WPA2" ) == 0 ) {
 					WiFiSecurity = WLAN_SEC_WPA2;
-					Serial << F(" : WPA2" ) << endl;
+					Serial << F("WPA2" ) << endl;
 				} else if( strcmp( ApplicationBuffer , "WPA" ) == 0 ) {
 					WiFiSecurity = WLAN_SEC_WPA;
-					Serial << F(" : WPA" ) << endl;
+					Serial << F("WPA" ) << endl;
 				} else if( strcmp( ApplicationBuffer , "WEP" ) == 0 ) {
 					WiFiSecurity = WLAN_SEC_WEP;
-					Serial << F(" : WEP" ) << endl;
+					Serial << F("WEP" ) << endl;
 				} else {
 					WiFiSecurity = WLAN_SEC_UNSEC;
-					Serial << F(" : NO SECURITY" ) << endl;
+					Serial << F("NO SECURITY" ) << endl;
 				}
 			} else {
 				Serial << F( "FEHLER (SEC)" ) << endl;
@@ -252,6 +275,92 @@ bool SDCardLoadConfiguration() {
 	}
 
 	return true;
+}
+
+// HTTP GET Request durchführen
+void HttpGetRequest( char *Server , char *Page , uint8_t &State , String &Content ){
+
+	Serial << F( "[" ) << millis() << F( "] ") << F( "HTTP GET Request an der Server '" ) << Server << F( "' senden" ) << endl;
+	
+	// IP Adresse des Server beim DNS Server nachfragen
+	Serial << F( "[" ) << millis() << F( "] ") << F( "IP Adresse des Servers..." );
+	
+	uint32_t ipAddress = 0;
+	uint64_t dnsTimeout = 10000;
+	uint64_t dnsStart = millis();
+
+	while( ipAddress == 0 ) {
+		if( !wifi.getHostByName( Server , &ipAddress ) ) {
+			if( (millis() - dnsStart) > dnsTimeout ) {
+				Serial << F( "FEHLER (DNS)" ) << endl;
+				return;
+			}
+		}
+		delay(500);
+	}
+
+	Serial << IpAddressToString( ipAddress ) << endl;
+
+	Serial << F( "[" ) << millis() << F( "] ") << F( "Verbindung zum Server aufbauen..." );
+	wifiClient = wifi.connectTCP( ipAddress , 80 );
+	if( wifiClient.connected() ) {
+		Serial << F( "OK" ) << endl;
+
+		// GET /index.html HTTP/1.1
+		String request = "GET ";
+		request += Page;
+		request += " HTTP/1.1\r\n";
+
+		// Host: pro-kitchen.net
+		request += "Host: ";
+		request += Server;
+		request += "\r\n";
+
+		// Connection: close
+		request += "Connection: close\r\n";
+
+		// Abschließen
+		request += "\r\n\r\n";
+		wifiClient.print( request );
+
+		Serial << F( "[" ) << millis() << F( "] ") << F( "Gesendeter HTTP GET Request..." ) << endl;
+		Serial << F( "[" ) << millis() << F( "] ") << F( "     GET ") << Page << F(" HTTP/1.1") << endl;
+		Serial << F( "[" ) << millis() << F( "] ") << F( "     Host: ") << Server << endl;
+		Serial << F( "[" ) << millis() << F( "] ") << F( "     Connection: close") << endl;
+
+		HttpReadResponse( State , Content , WIFI_IDLE_TIMEOUT );
+		
+		Serial << F( "[" ) << millis() << F( "] ") << F( "Verbindung zum Server schließen..." );
+		wifiClient.close();
+		Serial << F( "OK" ) << endl;
+	} else {
+		Serial << F( "FEHLER (VERBINDUNGSAUFBAU" );
+		return;
+	}
+}
+
+void HttpReadResponse( uint8_t &State , String &Content , uint32_t Timeout ){
+	uint64_t lastRead = millis();
+	String response = "";
+	while( wifiClient.connected() && ( millis() - lastRead < Timeout ) ) {
+		while( wifiClient.available() ) {
+			char c = wifiClient.read();
+			response += c;
+			lastRead = millis();
+		}
+	}
+
+	// HTTP Status auslesen
+	String state = response.substring( 9 , 12 );
+	State = state.toInt();
+
+	// Antwort des Servers
+	uint32_t contentStart = response.indexOf( "\r\n\r\n" );
+	Content = response.substring( contentStart + 4 , response.length() - 1 );
+	
+	Serial << F( "[" ) << millis() << F( "] ") << F( "Empfangene HTTP Response..." ) << endl;
+	Serial << F( "[" ) << millis() << F( "] ") << F( "     Status ") << State << endl;
+	Serial << F( "[" ) << millis() << F( "] ") << F( "     Inhalt: ") << Content << endl;
 }
 
 // Watchdog starten
