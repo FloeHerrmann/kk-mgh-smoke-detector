@@ -148,11 +148,11 @@ bool WiFiConnectToNetwork(){
 
 	Serial << F( "[" ) << millis() << F( "] ") << F( "WiFi Modul - Verbindung herstellen..." );
 
-	if( wifi.connectToAP( WiFiSSID , WiFiPassphrase , WiFiSecurity ) ){
+	if( wifi.connectToAP( WiFiSSID , WiFiPassphrase , WiFiSecurity , 2 ) ){
 		Serial << F( "OK" ) << endl;
 		return true;
 	} else {
-		Serial << F( "FEHLER (DELETE)" ) << endl;
+		Serial << F( "FEHLER (WIFI CONNECT)" ) << endl;
 		return false;
 	}
 }
