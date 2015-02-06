@@ -5,6 +5,7 @@
 #include <IniFile.h>
 #include <Streaming.h>
 #include <Watchdog.h>
+#include <rtc_clock.h>
 
 #define WIFI_IRQ 3
 #define WIFI_VBAT 5
@@ -25,6 +26,9 @@ const char HexLetters[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 
 #define ApplicationBufferSize 200
 char ApplicationBuffer[ ApplicationBufferSize ];
 
+// RTC (Real Time Clock)
+RTC_clock rtc_clock( XTAL );
+
 // WIFI Objekt
 Adafruit_CC3000 wifi = Adafruit_CC3000( WIFI_SELECT , WIFI_IRQ , WIFI_VBAT , SPI_CLOCK_DIVIDER );
 Adafruit_CC3000_Client wifiClient;
@@ -38,6 +42,7 @@ void setup(){
 	Serial << " Intelligenter Rauchmelder - Empfangsstation" << endl;
 	Serial << "* * * * * * * * * * * * * * * * * * * * * * * * * * * * *" << endl;
 
+	// Watchdog abschalten
 	WatchdogDisable();
 
 	// SD Harware initialisieren
@@ -74,34 +79,30 @@ void setup(){
 						uint8_t httpState;
 						String httpContent;
 						HttpGetRequest( "www.pro-kitchen.net" , "/demo/serverTime.do" , httpState , httpContent );
+
+						if( httpState == 200 && !httpContent.equals( "" ) ) {
+							// Uhrenbaustein intialisieren
+							RtcEnable();
+
+							// Datum und Uhrzeit einstellen
+							RtcSetDateTime( httpContent );
+						}
 					}
 				}
 			}
-
 		} else {
 			Serial << F( "FEHLER" ) << endl;
 		}
 	}
 
-	// Watchdog starten (5 Sekunden)
-	// WatchdogInitialize();
-
 }
 
 void loop() {
 
-	// Test des Watchdogs
-	delay( 1000 );
-	
-	/*
-	if( millis() > 40000 ) {
-		for(;;){
-			Serial << millis() << endl;	
-			delay( 1000 );
-		}
-	}
-	WatchdogReset();
-	*/
+	// Datum und Uhrzeit ausgeben
+	Serial << rtc_clock.get_days() << "." << rtc_clock.get_months() << "." << rtc_clock.get_years() << " " ;
+	Serial << rtc_clock.get_hours() << ":" << rtc_clock.get_minutes() << ":" << rtc_clock.get_seconds() << endl;
+	delay( 2000 );
 }
 
 // WiFi Modul initialisieren
@@ -340,6 +341,7 @@ void HttpGetRequest( char *Server , char *Page , uint8_t &State , String &Conten
 	}
 }
 
+// Antwort vom Webserver lesen
 void HttpReadResponse( uint8_t &State , String &Content , uint32_t Timeout ){
 	uint64_t lastRead = millis();
 	String response = "";
@@ -383,6 +385,46 @@ void WatchdogDisable(){
 	Serial << F( "[" ) << millis() << F( "] ") << F( "Watchdog abschalten..." );
 	watchdog.disable();
 	Serial << F( "OK" ) << endl;
+}
+
+// Uhrenbaustein initialiiseren
+void RtcEnable(){
+	Serial << F( "[" ) << millis() << F( "] ") << F( "RTC initialisieren..." );
+	rtc_clock.init();
+	Serial << F( "OK" ) << endl;
+}
+
+// Datum und Uhrzeit setzen
+void RtcSetDateTime( String dateTime ) {
+	// Datum
+	String day = dateTime.substring( 0 , dateTime.indexOf( "." ) );
+	if( day.toInt() < 10 ) day.replace( "0" , "" );
+	dateTime = dateTime.substring( dateTime.indexOf( "." ) + 1 , dateTime.length() );
+
+	String month = dateTime.substring( 0 , dateTime.indexOf( ".") );
+	if( month.toInt() < 10 ) month.replace( "0" , "" );
+	dateTime = dateTime.substring( dateTime.indexOf( "." ) + 1 , dateTime.length() );
+
+	String year = dateTime.substring( 0 , dateTime.indexOf( " ") );
+	dateTime = dateTime.substring( dateTime.indexOf( " " ) + 1 , dateTime.length() );
+
+	// Uhrzeit
+	String hours = dateTime.substring( 0 , dateTime.indexOf( ":" ) );
+	if( hours.toInt() < 10 ) hours.replace( "0" , "" );
+	dateTime = dateTime.substring( dateTime.indexOf( ":" ) + 1 , dateTime.length() );
+
+	String minutes = dateTime.substring( 0 , dateTime.indexOf( ":") );
+	if( minutes.toInt() < 10 ) minutes.replace( "0" , "" );
+	dateTime = dateTime.substring( dateTime.indexOf( ":" ) + 1 , dateTime.length() );
+
+	String seconds = dateTime.substring( 0 , dateTime.indexOf( ".") );
+	if( seconds.toInt() < 10 ) seconds.replace( "0" , "" );
+	dateTime = dateTime.substring( dateTime.indexOf( "." ) + 1 , dateTime.length() );
+	
+	// Uhrzeit stellen
+	rtc_clock.set_time( hours.toInt() , minutes.toInt() , seconds.toInt() );
+	// Datum stellen
+	rtc_clock.set_date( day.toInt() , month.toInt() , year.toInt() );
 }
 
 // String für eine MAC Adresse erzeugen
