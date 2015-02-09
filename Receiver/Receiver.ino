@@ -38,7 +38,7 @@ void setup(){
 	// Serielle Schnittstelle öffnen
 	Serial.begin( 115200 );
 
-	Serial << "* * * * * * * * * * * * * * * * * * * * * * * * * * * * *" << endl;
+	Serial << endl << endl << "* * * * * * * * * * * * * * * * * * * * * * * * * * * * *" << endl;
 	Serial << " Intelligenter Rauchmelder - Empfangsstation" << endl;
 	Serial << "* * * * * * * * * * * * * * * * * * * * * * * * * * * * *" << endl;
 
@@ -87,6 +87,14 @@ void setup(){
 							// Datum und Uhrzeit einstellen
 							RtcSetDateTime( httpContent );
 						}
+
+						// Wert an den Server schicken						
+						String data = "";
+						data += "Device=";
+						data += MacAddressToString( WiFiMacAddress );
+						data += "&Datapoint=Battery&Value=1.39";
+
+						HttpPostRequest( "www.pro-kitchen.net" , "/demo/data/general/data.do" , data , httpState , httpContent );
 					}
 				}
 			}
@@ -94,7 +102,6 @@ void setup(){
 			Serial << F( "FEHLER" ) << endl;
 		}
 	}
-
 }
 
 void loop() {
@@ -103,6 +110,7 @@ void loop() {
 	Serial << rtc_clock.get_days() << "." << rtc_clock.get_months() << "." << rtc_clock.get_years() << " " ;
 	Serial << rtc_clock.get_hours() << ":" << rtc_clock.get_minutes() << ":" << rtc_clock.get_seconds() << endl;
 	delay( 2000 );
+
 }
 
 // WiFi Modul initialisieren
@@ -282,6 +290,22 @@ bool SDCardLoadConfiguration() {
 // HTTP GET Request durchführen
 void HttpGetRequest( char *Server , char *Page , uint8_t &State , String &Content ){
 
+	// GET /index.html HTTP/1.1
+	String request = "GET ";
+	request += Page;
+	request += " HTTP/1.1\r\n";
+
+	// Host: pro-kitchen.net
+	request += "Host: ";
+	request += Server;
+	request += "\r\n";
+
+	// Connection: close
+	request += "Connection: close\r\n";
+
+	// Abschließen
+	request += "\r\n\r\n";
+
 	Serial << F( "[" ) << millis() << F( "] ") << F( "HTTP GET Request an der Server '" ) << Server << F( "' senden" ) << endl;
 	
 	// IP Adresse des Server beim DNS Server nachfragen
@@ -308,27 +332,88 @@ void HttpGetRequest( char *Server , char *Page , uint8_t &State , String &Conten
 	if( wifiClient.connected() ) {
 		Serial << F( "OK" ) << endl;
 
-		// GET /index.html HTTP/1.1
-		String request = "GET ";
-		request += Page;
-		request += " HTTP/1.1\r\n";
-
-		// Host: pro-kitchen.net
-		request += "Host: ";
-		request += Server;
-		request += "\r\n";
-
-		// Connection: close
-		request += "Connection: close\r\n";
-
-		// Abschließen
-		request += "\r\n\r\n";
 		wifiClient.print( request );
 
 		Serial << F( "[" ) << millis() << F( "] ") << F( "Gesendeter HTTP GET Request..." ) << endl;
 		Serial << F( "[" ) << millis() << F( "] ") << F( "     GET ") << Page << F(" HTTP/1.1") << endl;
 		Serial << F( "[" ) << millis() << F( "] ") << F( "     Host: ") << Server << endl;
 		Serial << F( "[" ) << millis() << F( "] ") << F( "     Connection: close") << endl;
+
+		HttpReadResponse( State , Content , WIFI_IDLE_TIMEOUT );
+		
+		Serial << F( "[" ) << millis() << F( "] ") << F( "Verbindung zum Server schließen..." );
+		wifiClient.close();
+		Serial << F( "OK" ) << endl;
+	} else {
+		Serial << F( "FEHLER (VERBINDUNGSAUFBAU" );
+		return;
+	}
+}
+
+// HTTP POST Request durchführen
+void HttpPostRequest( char *Server , char *Page , String Data , uint8_t &State , String &Content ){
+
+	// GET /index.html HTTP/1.1
+	String request = "POST ";
+	request += Page;
+	request += " HTTP/1.1\r\n";
+	// Host: pro-kitchen.net
+
+	request += "Host: ";
+	request += Server;
+	request += "\r\n";
+
+	// Connection: close
+	request += "Connection: close\r\n";
+	// Content Type
+	request += "Content-type: application/x-www-form-urlencoded\r\n";
+
+	// Content Length
+	request += "Content-length: ";
+ 	request += Data.length();
+	request += "\r\n\r\n";
+
+	// Content
+	request += Data;
+
+	// Abschließen
+	request += "\r\n\r\n";
+
+	Serial << F( "[" ) << millis() << F( "] ") << F( "HTTP POST Request an der Server '" ) << Server << F( "' senden" ) << endl;
+	
+	// IP Adresse des Server beim DNS Server nachfragen
+	Serial << F( "[" ) << millis() << F( "] ") << F( "IP Adresse des Servers..." );
+	
+	uint32_t ipAddress = 0;
+	uint64_t dnsTimeout = 10000;
+	uint64_t dnsStart = millis();
+
+	while( ipAddress == 0 ) {
+		if( !wifi.getHostByName( Server , &ipAddress ) ) {
+			if( (millis() - dnsStart) > dnsTimeout ) {
+				Serial << F( "FEHLER (DNS)" ) << endl;
+				return;
+			}
+		}
+		delay(500);
+	}
+
+	Serial << IpAddressToString( ipAddress ) << endl;
+
+	Serial << F( "[" ) << millis() << F( "] ") << F( "Verbindung zum Server aufbauen..." );
+	wifiClient = wifi.connectTCP( ipAddress , 80 );
+	if( wifiClient.connected() ) {
+		Serial << F( "OK" ) << endl;
+
+		wifiClient.print( request );
+
+		Serial << F( "[" ) << millis() << F( "] ") << F( "Gesendeter HTTP POST Request..." ) << endl;
+		Serial << F( "[" ) << millis() << F( "] ") << F( "     POST ") << Page << F(" HTTP/1.1") << endl;
+		Serial << F( "[" ) << millis() << F( "] ") << F( "     Host: ") << Server << endl;
+		Serial << F( "[" ) << millis() << F( "] ") << F( "     Connection: close") << endl;
+		Serial << F( "[" ) << millis() << F( "] ") << F( "     Content-type: application/x-www-form-urlencoded") << endl;
+		Serial << F( "[" ) << millis() << F( "] ") << F( "     Content-length: ") << Data.length() << endl;
+		Serial << F( "[" ) << millis() << F( "] ") << F( "     " ) << Data << endl;
 
 		HttpReadResponse( State , Content , WIFI_IDLE_TIMEOUT );
 		
