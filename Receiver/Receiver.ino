@@ -6,6 +6,7 @@
 #include <Streaming.h>
 #include <Watchdog.h>
 #include <rtc_clock.h>
+#include <Panstamp.h>
 
 #define WIFI_IRQ 3
 #define WIFI_VBAT 5
@@ -95,6 +96,16 @@ void setup(){
 						data += "&Datapoint=Battery&Value=1.39";
 
 						HttpPostRequest( "www.pro-kitchen.net" , "/demo/data/general/data.do" , data , httpState , httpContent );
+
+						// Verbindung zum Panstamp herstellen
+						panstamp.init();
+
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Command Mode..." ) << panstamp.switchToCommandMode() << endl;
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Address..." ) << panstamp.address() << endl;
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Firmware..." ) << panstamp.firmwareVersion() << endl;
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Hardware..." ) << panstamp.hardwareVersion() << endl;
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Data Mode..." ) << panstamp.switchToDataMode() << endl;
+
 					}
 				}
 			}
@@ -107,9 +118,14 @@ void setup(){
 void loop() {
 
 	// Datum und Uhrzeit ausgeben
-	Serial << rtc_clock.get_days() << "." << rtc_clock.get_months() << "." << rtc_clock.get_years() << " " ;
-	Serial << rtc_clock.get_hours() << ":" << rtc_clock.get_minutes() << ":" << rtc_clock.get_seconds() << endl;
-	delay( 2000 );
+	//Serial << rtc_clock.get_days() << "." << rtc_clock.get_months() << "." << rtc_clock.get_years() << " " ;
+	//Serial << rtc_clock.get_hours() << ":" << rtc_clock.get_minutes() << ":" << rtc_clock.get_seconds() << endl;
+	
+	// Empfange Daten von Panstamp
+	while( Serial2.available() > 0 ) {
+    	char c = Serial2.read();
+    	Serial.print( c );
+	}
 
 }
 
