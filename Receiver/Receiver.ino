@@ -34,6 +34,9 @@ RTC_clock rtc_clock( XTAL );
 Adafruit_CC3000 wifi = Adafruit_CC3000( WIFI_SELECT , WIFI_IRQ , WIFI_VBAT , SPI_CLOCK_DIVIDER );
 Adafruit_CC3000_Client wifiClient;
 
+// Received data from the panstamp modem
+String ReceivedData = "";
+
 void setup(){
 
 	// Serielle Schnittstelle öffnen
@@ -89,19 +92,21 @@ void setup(){
 							RtcSetDateTime( httpContent );
 						}
 
-						// Wert an den Server schicken						
-						String data = "";
-						data += "Device=";
-						data += MacAddressToString( WiFiMacAddress );
-						data += "&Datapoint=Battery&Value=1.39";
-
-						HttpPostRequest( "www.pro-kitchen.net" , "/demo/data/general/data.do" , data , httpState , httpContent );
-
 						// Verbindung zum Panstamp herstellen
 						panstamp.init();
 
 						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Command Mode..." ) << panstamp.switchToCommandMode() << endl;
+						
+						//Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Set Address..." );
+						//panstamp.setAddress( "01" );
+						//Serial << F( "DONE" ) << endl;
 						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Address..." ) << panstamp.address() << endl;
+
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Set Synchronization Word..." );
+						panstamp.setSynchronizationWord( "6432" );
+						Serial << F( "DONE" ) << endl;
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Synchronization Word..." ) << panstamp.synchronizationWord() << endl;
+
 						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Firmware..." ) << panstamp.firmwareVersion() << endl;
 						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Hardware..." ) << panstamp.hardwareVersion() << endl;
 						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Data Mode..." ) << panstamp.switchToDataMode() << endl;
@@ -120,13 +125,169 @@ void loop() {
 	// Datum und Uhrzeit ausgeben
 	//Serial << rtc_clock.get_days() << "." << rtc_clock.get_months() << "." << rtc_clock.get_years() << " " ;
 	//Serial << rtc_clock.get_hours() << ":" << rtc_clock.get_minutes() << ":" << rtc_clock.get_seconds() << endl;
-	
-	// Empfange Daten von Panstamp
-	while( Serial2.available() > 0 ) {
-    	char c = Serial2.read();
-    	Serial.print( c );
-	}
 
+	if( Serial2.available() > 0 ) {
+		byte CurrentDataChar = Serial2.read();
+
+		if( CurrentDataChar != 10 && CurrentDataChar != 13 ) ReceivedData += (char)CurrentDataChar;
+
+		if( CurrentDataChar == 10 ) {
+			if( ReceivedData.length() > 2  ) ProcessReceivedData( ReceivedData );
+			ReceivedData = "";
+		}
+	}	
+}
+
+// Processing the received data from the smoke detector
+bool ProcessReceivedData( String data ) {
+
+	Serial << F( "[" ) << millis() << F( "] Empfangene Daten..." ) << data << endl;
+	Serial << F( "[" ) << millis() << F( "] Verarbeiten der Daten..." ) << endl;
+
+	String addressS = data.substring( 6 , 8 );
+	Serial << F( "[" ) << millis() << F( "]      Rauchmelder-Nr: ") << addressS << endl;
+
+	String rssiS = data.substring( 1 , 3 );
+	uint32_t rssiI = HexStringToInt( rssiS );
+	Serial << F( "[" ) << millis() << F( "]      RSSI: ") << rssiI << endl;
+
+	String uptimeS = data.substring( 8 , 16 );
+	uint32_t uptimeI = HexStringToInt( uptimeS );
+	uptimeI = uptimeI / 4;
+	Serial << F( "[" ) << millis() << F( "]      Betriebszeit: ") << uptimeI << " Sekunden" << endl;
+
+	String smokeChamberS = data.substring( 16 , 20 );
+	uint32_t smokeChamberI = HexStringToInt( smokeChamberS );
+	float smokeChamberF = (float)smokeChamberI;
+	smokeChamberF = smokeChamberF * 0.003223;
+	Serial << F( "[" ) << millis() << F( "]      Rauchkammer-Wert: ") << smokeChamberF << endl;	
+
+	String smokeAlarmsS = data.substring( 20 , 22 );
+	uint32_t smokeAlarmsI = HexStringToInt( smokeAlarmsS );
+	Serial << F( "[" ) << millis() << F( "]      Anz. Rauchalarme: ") << smokeAlarmsI << endl;
+
+	String pollutionS = data.substring( 22 , 24 );
+	uint32_t pollutionI = HexStringToInt( pollutionS );
+	Serial << F( "[" ) << millis() << F( "]      Verschmutzungsgrad: ") << pollutionI << endl;
+
+	String batteryS = data.substring( 24 , 28 );
+	uint32_t batteryI = HexStringToInt( batteryS );
+	float batteryF = (float)batteryI;
+	batteryF = batteryF * 0.018369;
+	Serial << F( "[" ) << millis() << F( "]      Batterie-Spannung: ") << batteryF << endl;	
+
+	String temp01S = data.substring( 28 , 30 );
+	uint32_t temp01I = HexStringToInt( temp01S );
+	float temp01F = (float)temp01I;
+	temp01F = (temp01F / 2.0 ) - 20.0;
+	Serial << F( "[" ) << millis() << F( "]      Temperatur 01: ") << temp01F << endl;	
+
+	String temp02S = data.substring( 30 , 32 );
+	uint32_t temp02I = HexStringToInt( temp02S );
+	float temp02F = (float)temp02I;
+	temp02F = (temp02F / 2.0 ) - 20.0;
+	Serial << F( "[" ) << millis() << F( "]      Temperatur 02: ") << temp02F << endl;
+
+	String thermoAlarmsS = data.substring( 32 , 34 );
+	uint32_t thermoAlarmsI = HexStringToInt( thermoAlarmsS );
+	Serial << F( "[" ) << millis() << F( "]      Anz. Thermoalarme: ") << thermoAlarmsI << endl;
+
+	String testAlarmsS = data.substring( 34 , 36 );
+	uint32_t testAlarmsI = HexStringToInt( testAlarmsS );
+	Serial << F( "[" ) << millis() << F( "]      Anz. Testalarme: ") << testAlarmsI << endl;
+
+	String wireAlarmsS = data.substring( 36 , 38 );
+	uint32_t wireAlarmsI = HexStringToInt( wireAlarmsS );
+	Serial << F( "[" ) << millis() << F( "]      Anz. Alarme (Bus): ") << wireAlarmsI << endl;
+
+	String radioAlarmsS = data.substring( 38 , 40 );
+	uint32_t radioAlarmsI = HexStringToInt( radioAlarmsS );
+	Serial << F( "[" ) << millis() << F( "]      Anz. Alarme (Funk): ") << radioAlarmsI << endl;
+
+	// Generate HTTP Data
+	String httpData = "json={\"identifier\":\"";
+	httpData += MacAddressToString( WiFiMacAddress ) + ":" + addressS + "\",";
+	httpData += "\"data\":[";
+
+	httpData += "{\"name\":\"Uptime\",\"value\":\"";
+	httpData += uptimeI;
+	httpData += "\"},";
+
+	httpData += "{\"name\":\"SmokeboxValue\",\"value\":\"";
+	httpData += smokeChamberF;
+	httpData += "\"},";
+
+	httpData += "{\"name\":\"SmokeAlarmsNumber\",\"value\":\"";
+	httpData += smokeAlarmsI;
+	httpData += "\"},";
+
+	httpData += "{\"name\":\"ContaminationLevel\",\"value\":\"";
+	httpData += pollutionI;
+	httpData += "\"},";
+
+	httpData += "{\"name\":\"Battery\",\"value\":\"";
+	httpData += batteryF;
+	httpData += "\"},";
+
+	httpData += "{\"name\":\"Temperature01\",\"value\":\"";
+	httpData += temp01F;
+	httpData += "\"},";
+
+	httpData += "{\"name\":\"Temperature02\",\"value\":\"";
+	httpData += temp02F;
+	httpData += "\"},";
+
+	httpData += "{\"name\":\"ThermoAlarmsNumber\",\"value\":\"";
+	httpData += thermoAlarmsI;
+	httpData += "\"},";
+
+	httpData += "{\"name\":\"TestAlarmsNumber\",\"value\":\"";
+	httpData += testAlarmsI;
+	httpData += "\"}";
+
+	httpData += "]}";
+
+	//Datum und Uhrzeit vom Server holen
+	uint8_t httpState;
+	String httpContent;
+	HttpPostRequest( "www.pro-kitchen.net" , "/demo/data/jsonData.do" , httpData , httpState , httpContent );
+}
+
+// Get the numeric value for a HEX string
+uint32_t HexStringToInt( String hexString ) {
+	if( hexString.length() == 8 ) {
+		return( 
+			GetValueForHex( hexString.charAt( 7 ) ) + 
+			( GetValueForHex( hexString.charAt( 6 ) ) << 4 ) +
+			( GetValueForHex( hexString.charAt( 5 ) ) << 8 ) + 
+			( GetValueForHex( hexString.charAt( 4 ) ) << 12 ) +
+			( GetValueForHex( hexString.charAt( 3 ) ) << 16 ) +
+			( GetValueForHex( hexString.charAt( 2 ) ) << 20 ) + 
+			( GetValueForHex( hexString.charAt( 1 ) ) << 24 ) +
+			( GetValueForHex( hexString.charAt( 0 ) ) << 28 )
+		);
+	} else if( hexString.length() == 4 ) {
+		return( 
+			GetValueForHex( hexString.charAt( 3 ) ) + 
+			( GetValueForHex( hexString.charAt( 2 ) ) << 4 ) +
+			( GetValueForHex( hexString.charAt( 1 ) ) << 8 ) + 
+			( GetValueForHex( hexString.charAt( 0 ) ) << 12 )
+		);
+	} else if( hexString.length() == 2 ) {
+		return( 
+			GetValueForHex( hexString.charAt( 1 ) ) + 
+			( GetValueForHex( hexString.charAt( 0 ) ) << 4 )
+		);
+	}
+}
+
+// Get the numeric value for a HEX character
+byte GetValueForHex( char c ) {
+	if(c >= '0' && c <= '9') {
+		return (byte)(c - '0');
+	} else {
+		return (byte)(c-'A'+10);
+	}
 }
 
 // WiFi Modul initialisieren
@@ -158,7 +319,7 @@ bool WiFiGetMacAddress(){
 // WiFi Modul initialisieren
 bool WiFiDeleteOldProfiles(){
 
-	Serial << F( "[" ) << millis() << F( "] ") << F( "WiFi Modul - Alte Profile löschen..." );
+	Serial << F( "[" ) << millis() << F( "] ") << F( "WiFi Modul - Alte Profile loeschen..." );
 
 	if( wifi.deleteProfiles() ){
 		Serial << F( "OK" ) << endl;
@@ -241,7 +402,7 @@ bool SDCardLoadConfiguration() {
 
 	IniFile configFile = IniFile( "config.ini" );
 
-	Serial << F( "[" ) << millis() << F( "] " ) << F( "Datei 'config.ini' öffnen..." );
+	Serial << F( "[" ) << millis() << F( "] " ) << F( "Datei 'config.ini' oeffnen..." );
 
 	if( configFile.open() ) {
 
@@ -357,7 +518,7 @@ void HttpGetRequest( char *Server , char *Page , uint8_t &State , String &Conten
 
 		HttpReadResponse( State , Content , WIFI_IDLE_TIMEOUT );
 		
-		Serial << F( "[" ) << millis() << F( "] ") << F( "Verbindung zum Server schließen..." );
+		Serial << F( "[" ) << millis() << F( "] ") << F( "Verbindung zum Server schliessen..." );
 		wifiClient.close();
 		Serial << F( "OK" ) << endl;
 	} else {
@@ -390,10 +551,10 @@ void HttpPostRequest( char *Server , char *Page , String Data , uint8_t &State ,
 	request += "\r\n\r\n";
 
 	// Content
-	request += Data;
+	//request += Data;
 
 	// Abschließen
-	request += "\r\n\r\n";
+	//request += "\r\n\r\n";
 
 	Serial << F( "[" ) << millis() << F( "] ") << F( "HTTP POST Request an der Server '" ) << Server << F( "' senden" ) << endl;
 	
@@ -422,6 +583,8 @@ void HttpPostRequest( char *Server , char *Page , String Data , uint8_t &State ,
 		Serial << F( "OK" ) << endl;
 
 		wifiClient.print( request );
+		wifiClient.print( Data );
+		wifiClient.print( "\r\n\r\n" );
 
 		Serial << F( "[" ) << millis() << F( "] ") << F( "Gesendeter HTTP POST Request..." ) << endl;
 		Serial << F( "[" ) << millis() << F( "] ") << F( "     POST ") << Page << F(" HTTP/1.1") << endl;
@@ -476,7 +639,7 @@ void WatchdogInitialize(){
 
 // Watchdog zurücksetzen
 void WatchdogReset(){
-	Serial << F( "[" ) << millis() << F( "] ") << F( "Watchdog zurücksetzen..." );
+	Serial << F( "[" ) << millis() << F( "] ") << F( "Watchdog zuruecksetzen..." );
 	watchdog.restart();
 	Serial << F( "OK" ) << endl;
 }
