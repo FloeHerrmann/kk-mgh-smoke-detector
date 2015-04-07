@@ -6,7 +6,7 @@
 #include <Streaming.h>
 #include <Watchdog.h>
 #include <rtc_clock.h>
-#include <Panstamp.h>
+#include <PanstampHelper.h>
 
 #define WIFI_IRQ 3
 #define WIFI_VBAT 5
@@ -14,6 +14,14 @@
 #define WIFI_IDLE_TIMEOUT 5000
 
 #define SD_CARD_SELECT 4
+
+#define SEND_DATA true
+
+#define LED_GREEN 36
+#define LED_RED	37
+#define LED_BLINK 100
+#define LED_BLINK_ERROR 5000
+#define LED_BLINK_SUCCESS 1000
 
 char WiFiSSID[32] = "";
 char WiFiPassphrase[32] = "";
@@ -38,6 +46,13 @@ Adafruit_CC3000_Client wifiClient;
 String ReceivedData = "";
 
 void setup(){
+
+	pinMode( LED_GREEN , OUTPUT );
+	pinMode( LED_RED , OUTPUT );
+
+	BlinkLED( true , true , 500 );
+	BlinkLED( true , true , 500 );
+	BlinkLED( true , true , 500 );
 
 	// Serielle Schnittstelle öffnen
 	Serial.begin( 115200 );
@@ -93,24 +108,28 @@ void setup(){
 						}
 
 						// Verbindung zum Panstamp herstellen
-						panstamp.init();
+						BlinkLED( true , true , 0 );
+						panstampHelper.init();
 
-						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Command Mode..." ) << panstamp.switchToCommandMode() << endl;
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Command Mode..." ) << panstampHelper.switchToCommandMode() << endl;
 						
 						//Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Set Address..." );
-						//panstamp.setAddress( "01" );
+						//panstampHelper.setAddress( "01" );
 						//Serial << F( "DONE" ) << endl;
-						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Address..." ) << panstamp.address() << endl;
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Address..." ) << panstampHelper.address() << endl;
 
 						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Set Synchronization Word..." );
-						panstamp.setSynchronizationWord( "6432" );
+						panstampHelper.setSynchronizationWord( "6432" );
 						Serial << F( "DONE" ) << endl;
-						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Synchronization Word..." ) << panstamp.synchronizationWord() << endl;
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Synchronization Word..." ) << panstampHelper.synchronizationWord() << endl;
 
-						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Firmware..." ) << panstamp.firmwareVersion() << endl;
-						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Hardware..." ) << panstamp.hardwareVersion() << endl;
-						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Data Mode..." ) << panstamp.switchToDataMode() << endl;
-
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Firmware..." ) << panstampHelper.firmwareVersion() << endl;
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Hardware..." ) << panstampHelper.hardwareVersion() << endl;
+						Serial << F( "[" ) << millis() << F( "] ") << F( "Panstamp - Data Mode..." ) << panstampHelper.switchToDataMode() << endl;
+						BlinkLED( true , false , 500 );
+						BlinkLED( true , false , 500 );
+						BlinkLED( true , false , 500 );
+						BlinkLED( false , false , 0 );
 					}
 				}
 			}
@@ -122,26 +141,60 @@ void setup(){
 
 void loop() {
 
-	// Datum und Uhrzeit ausgeben
-	//Serial << rtc_clock.get_days() << "." << rtc_clock.get_months() << "." << rtc_clock.get_years() << " " ;
-	//Serial << rtc_clock.get_hours() << ":" << rtc_clock.get_minutes() << ":" << rtc_clock.get_seconds() << endl;
-
 	if( Serial2.available() > 0 ) {
+		digitalWrite( LED_GREEN , HIGH );
 		byte CurrentDataChar = Serial2.read();
-
 		if( CurrentDataChar != 10 && CurrentDataChar != 13 ) ReceivedData += (char)CurrentDataChar;
 
 		if( CurrentDataChar == 10 ) {
-			if( ReceivedData.length() > 2  ) ProcessReceivedData( ReceivedData );
+			Serial << F( "[" ) << millis() << F( "] Empfangene Daten..." ) << ReceivedData << endl;
+			if( ReceivedData.length() == 18 ) ProcessReceivedState( ReceivedData );
+			if( ReceivedData.length() == 40 ) ProcessReceivedData( ReceivedData );
 			ReceivedData = "";
 		}
-	}	
+	} else {
+		digitalWrite( LED_GREEN , LOW );
+	}
+}
+
+void ProcessReceivedState( String data ) {
+	Serial << F( "[" ) << millis() << F( "] Verarbeiten der Daten..." ) << endl;
+
+	String addressS = data.substring( 6 , 8 );
+	Serial << F( "[" ) << millis() << F( "]      Rauchmelder-Nr: ") << addressS << endl;
+
+	String rssiS = data.substring( 1 , 3 );
+	uint32_t rssiI = HexStringToInt( rssiS );
+	Serial << F( "[" ) << millis() << F( "]      RSSI: ") << rssiI << endl;
+
+	String stateS = data.substring( 8 , 10 );
+	uint32_t stateI = HexStringToInt( stateS );
+	Serial << F( "[" ) << millis() << F( "]      State: ") << stateI << endl;
+
+	// Generate HTTP Data
+	String httpData = "json={\"identifier\":\"";
+	httpData += MacAddressToString( WiFiMacAddress ) + ":" + addressS + "\",";
+	httpData += "\"data\":[";
+
+	httpData += "{\"name\":\"CurrentState\",\"value\":\"";
+	httpData += stateI;
+	httpData += "\"}";
+
+	httpData += "]}";
+
+	//Datum und Uhrzeit vom Server holen
+	if( SEND_DATA == true ) {
+		uint8_t httpState;
+		String httpContent;
+		HttpPostRequest( "www.pro-kitchen.net" , "/demo/data/jsonData.do" , httpData , httpState , httpContent );
+	} else {
+		Serial << httpData << endl;
+	}
 }
 
 // Processing the received data from the smoke detector
-bool ProcessReceivedData( String data ) {
+void ProcessReceivedData( String data ) {
 
-	Serial << F( "[" ) << millis() << F( "] Empfangene Daten..." ) << data << endl;
 	Serial << F( "[" ) << millis() << F( "] Verarbeiten der Daten..." ) << endl;
 
 	String addressS = data.substring( 6 , 8 );
@@ -248,9 +301,13 @@ bool ProcessReceivedData( String data ) {
 	httpData += "]}";
 
 	//Datum und Uhrzeit vom Server holen
-	uint8_t httpState;
-	String httpContent;
-	HttpPostRequest( "www.pro-kitchen.net" , "/demo/data/jsonData.do" , httpData , httpState , httpContent );
+	if( SEND_DATA == true ) {
+		uint8_t httpState;
+		String httpContent;
+		HttpPostRequest( "www.pro-kitchen.net" , "/demo/data/jsonData.do" , httpData , httpState , httpContent );
+	} else {
+		Serial << httpData << endl;
+	}
 }
 
 // Get the numeric value for a HEX string
@@ -293,12 +350,15 @@ byte GetValueForHex( char c ) {
 // WiFi Modul initialisieren
 bool WiFiInitialize(){
 
+	BlinkLED( true , true , 0 );
 	Serial << F( "[" ) << millis() << F( "] ") << F( "WiFi Modul - Initialisieren..." );
 
 	if( wifi.begin() ){
+		BlinkLED( true , false , LED_BLINK_SUCCESS );
 		Serial << F( "OK" ) << endl;
 		return true;
 	} else {
+		BlinkLED( false , true , LED_BLINK_ERROR );
 		Serial << F( "FEHLER (INIT)" ) << endl;
 		return false;
 	}
@@ -306,11 +366,14 @@ bool WiFiInitialize(){
 
 // MAC Adresse des WiFi Moduls
 bool WiFiGetMacAddress(){
+	BlinkLED( true , true , 0 );
 	Serial << F( "[" ) << millis() << F( "] ") << F( "WiFi Modul - MAC Adresse auslesen..." );
 	if( wifi.getMacAddress( WiFiMacAddress ) ) {
+		BlinkLED( true , false , LED_BLINK_SUCCESS );
 		Serial << MacAddressToString( WiFiMacAddress ) << endl;
 		return true;
 	} else {
+		BlinkLED( false , true , LED_BLINK_ERROR );
    		Serial << F( "FEHLER (MAC)" ) << endl;
    		return false;
 	}
@@ -318,13 +381,15 @@ bool WiFiGetMacAddress(){
 
 // WiFi Modul initialisieren
 bool WiFiDeleteOldProfiles(){
-
+	BlinkLED( true , true , 0 );
 	Serial << F( "[" ) << millis() << F( "] ") << F( "WiFi Modul - Alte Profile loeschen..." );
 
 	if( wifi.deleteProfiles() ){
+		BlinkLED( true , false , LED_BLINK_SUCCESS );
 		Serial << F( "OK" ) << endl;
 		return true;
 	} else {
+		BlinkLED( false , true , LED_BLINK_ERROR );
 		Serial << F( "FEHLER (DELETE)" ) << endl;
 		return false;
 	}
@@ -333,12 +398,15 @@ bool WiFiDeleteOldProfiles(){
 // Verbindung zum konfigurierten WiFi herstellen
 bool WiFiConnectToNetwork(){
 
+	BlinkLED( true , true , 0 );
 	Serial << F( "[" ) << millis() << F( "] ") << F( "WiFi Modul - Verbindung herstellen..." );
 
 	if( wifi.connectToAP( WiFiSSID , WiFiPassphrase , WiFiSecurity , 2 ) ){
+		BlinkLED( true , false , LED_BLINK_SUCCESS );
 		Serial << F( "OK" ) << endl;
 		return true;
 	} else {
+		BlinkLED( false , true , LED_BLINK_ERROR );
 		Serial << F( "FEHLER (WIFI CONNECT)" ) << endl;
 		return false;
 	}
@@ -347,6 +415,7 @@ bool WiFiConnectToNetwork(){
 // IP Adresse, etc. vom DHCP Server beziehen
 bool WiFiCheckDHCP(){
 
+	BlinkLED( true , true , 0 );
 	Serial << F( "[" ) << millis() << F( "] ") << F( "WiFi Modul - DHCP Konfiguration..." );
 
 	unsigned long dhcpTimeout = 10000;
@@ -354,12 +423,14 @@ bool WiFiCheckDHCP(){
   
 	while ( !wifi.checkDHCP() ){
 		if( (millis() - dhcpStart) > dhcpTimeout ) {
+			BlinkLED( false , true , LED_BLINK_ERROR );
 			Serial << F( "FEHLER (DHCP)" ) << endl;
 			return false;
 		}
 		delay(100);
 	}
 
+	BlinkLED( true , false , LED_BLINK_SUCCESS );
 	Serial << F( "OK" ) << endl;
 
 	uint32_t ipAddress, netmask, gateway, dhcpserv, dnsserv;
@@ -382,6 +453,7 @@ bool WiFiCheckDHCP(){
 // Hardware für SD Karte initialisieren
 bool SDCardInitialize(){
 
+	BlinkLED( true , true , 0 );
 	Serial << F( "[" ) << millis() << F( "] ") << F( "SD Karte initialisieren..." );
 
 	bool isAvailable = SD.begin( SD_CARD_SELECT );
@@ -389,9 +461,11 @@ bool SDCardInitialize(){
 	if( isAvailable == true ) {
 		Serial << F( "OK" ) << endl;
 		return true;
+		BlinkLED( true , false , LED_BLINK_SUCCESS );
 	} else {
 		Serial << F( "FEHLER < < <  K E I N E  SD KARTE EINGELEGT?" ) << endl;
 		return false;
+		BlinkLED( false , true , LED_BLINK_ERROR );
 	}
 }
 
@@ -399,6 +473,8 @@ bool SDCardInitialize(){
 bool SDCardLoadConfiguration() {
 
 	//WatchdogReset();
+
+	BlinkLED( true , true , 0 );
 
 	IniFile configFile = IniFile( "config.ini" );
 
@@ -410,29 +486,39 @@ bool SDCardLoadConfiguration() {
 		Serial << F( "OK" ) << endl;
 		Serial << F( "[" ) << millis() << F( "] " ) << F( "Inhalt der 'config.ini' ist vailde..." );
 
+		BlinkLED( true , true , 0 );
 		if( configFile.validate( ApplicationBuffer , ApplicationBufferSize ) ) {
+			BlinkLED( true , false , LED_BLINK_SUCCESS );
 			Serial << F( "OK" ) << endl;
 
+			BlinkLED( true , true , 0 );
 			Serial << F( "[" ) << millis() << F( "] " ) << F( "WiFi SSID: " );
 			if( configFile.getValue( "WIFI" , "ssid" , ApplicationBuffer , ApplicationBufferSize ) ){
+				BlinkLED( true , false , LED_BLINK_SUCCESS );
 				strcpy( WiFiSSID , ApplicationBuffer );
 				Serial << WiFiSSID << endl;
 			} else {
+				BlinkLED( false , true , LED_BLINK_ERROR );
 				Serial << F( "FEHLER (SSID)" ) << endl;
 				return false;
 			}
 
+			BlinkLED( true , true , 0 );
 			Serial << F( "[" ) << millis() << F( "] " ) << F( "WiFi Passphrase: " );
 			if( configFile.getValue( "WIFI" , "pass" , ApplicationBuffer , ApplicationBufferSize ) ){
+				BlinkLED( true , false , LED_BLINK_SUCCESS );
 				strcpy( WiFiPassphrase , ApplicationBuffer );
 				Serial << WiFiPassphrase << endl;
 			} else {
+				BlinkLED( false , true , LED_BLINK_ERROR );
 				Serial << F( "FEHLER (PASS)" ) << endl;
 				return false;
 			}
 
+			BlinkLED( true , true , 0 );
 			Serial << F( "[" ) << millis() << F( "] " ) << F( "WiFi Security: " );
 			if( configFile.getValue( "WIFI" , "sec" , ApplicationBuffer , ApplicationBufferSize ) ){
+				BlinkLED( true , false , LED_BLINK_SUCCESS );
 				if( strcmp( ApplicationBuffer , "WPA2" ) == 0 ) {
 					WiFiSecurity = WLAN_SEC_WPA2;
 					Serial << F("WPA2" ) << endl;
@@ -447,25 +533,32 @@ bool SDCardLoadConfiguration() {
 					Serial << F("NO SECURITY" ) << endl;
 				}
 			} else {
+				BlinkLED( false , true , LED_BLINK_ERROR );
 				Serial << F( "FEHLER (SEC)" ) << endl;
 				return false;
 			}
 
+			BlinkLED( true , false , LED_BLINK_SUCCESS );
 			return true;
 		} else {
+			BlinkLED( false , true , LED_BLINK_ERROR );
 			Serial << F( "FEHLER (VALIDIERUNG)" ) << endl;
 			return false;
 		}
 	} else {
+		BlinkLED( false , true , LED_BLINK_ERROR );
 		Serial << F( "FEHLER (ÖFFNEN)" ) << endl;
 		return false;
 	}
 
+	BlinkLED( true , false , LED_BLINK_SUCCESS );
 	return true;
 }
 
 // HTTP GET Request durchführen
 void HttpGetRequest( char *Server , char *Page , uint8_t &State , String &Content ){
+
+	BlinkLED( true , true , 0 );
 
 	// GET /index.html HTTP/1.1
 	String request = "GET ";
@@ -507,6 +600,7 @@ void HttpGetRequest( char *Server , char *Page , uint8_t &State , String &Conten
 	Serial << F( "[" ) << millis() << F( "] ") << F( "Verbindung zum Server aufbauen..." );
 	wifiClient = wifi.connectTCP( ipAddress , 80 );
 	if( wifiClient.connected() ) {
+		BlinkLED( true , false , 0 );
 		Serial << F( "OK" ) << endl;
 
 		wifiClient.print( request );
@@ -516,12 +610,16 @@ void HttpGetRequest( char *Server , char *Page , uint8_t &State , String &Conten
 		Serial << F( "[" ) << millis() << F( "] ") << F( "     Host: ") << Server << endl;
 		Serial << F( "[" ) << millis() << F( "] ") << F( "     Connection: close") << endl;
 
+		BlinkLED( false , false , 0 );
+
 		HttpReadResponse( State , Content , WIFI_IDLE_TIMEOUT );
 		
 		Serial << F( "[" ) << millis() << F( "] ") << F( "Verbindung zum Server schliessen..." );
 		wifiClient.close();
 		Serial << F( "OK" ) << endl;
+		BlinkLED( true , false , LED_BLINK_SUCCESS );
 	} else {
+		BlinkLED( true , false , LED_BLINK_ERROR );
 		Serial << F( "FEHLER (VERBINDUNGSAUFBAU" );
 		return;
 	}
@@ -529,6 +627,8 @@ void HttpGetRequest( char *Server , char *Page , uint8_t &State , String &Conten
 
 // HTTP POST Request durchführen
 void HttpPostRequest( char *Server , char *Page , String Data , uint8_t &State , String &Content ){
+
+	BlinkLED( true , true , 0 );
 
 	// GET /index.html HTTP/1.1
 	String request = "POST ";
@@ -580,6 +680,7 @@ void HttpPostRequest( char *Server , char *Page , String Data , uint8_t &State ,
 	Serial << F( "[" ) << millis() << F( "] ") << F( "Verbindung zum Server aufbauen..." );
 	wifiClient = wifi.connectTCP( ipAddress , 80 );
 	if( wifiClient.connected() ) {
+		BlinkLED( true , false , 0 );
 		Serial << F( "OK" ) << endl;
 
 		wifiClient.print( request );
@@ -594,13 +695,15 @@ void HttpPostRequest( char *Server , char *Page , String Data , uint8_t &State ,
 		Serial << F( "[" ) << millis() << F( "] ") << F( "     Content-length: ") << Data.length() << endl;
 		Serial << F( "[" ) << millis() << F( "] ") << F( "     " ) << Data << endl;
 
+		BlinkLED( false , false , 0 );
 		HttpReadResponse( State , Content , WIFI_IDLE_TIMEOUT );
 		
 		Serial << F( "[" ) << millis() << F( "] ") << F( "Verbindung zum Server schließen..." );
 		wifiClient.close();
 		Serial << F( "OK" ) << endl;
+		BlinkLED( true , false , LED_BLINK_SUCCESS );
 	} else {
-		Serial << F( "FEHLER (VERBINDUNGSAUFBAU" );
+		BlinkLED( true , false , LED_BLINK_ERROR );
 		return;
 	}
 }
@@ -611,9 +714,11 @@ void HttpReadResponse( uint8_t &State , String &Content , uint32_t Timeout ){
 	String response = "";
 	while( wifiClient.connected() && ( millis() - lastRead < Timeout ) ) {
 		while( wifiClient.available() ) {
+			BlinkLED( true , false , 0 );
 			char c = wifiClient.read();
 			response += c;
 			lastRead = millis();
+			BlinkLED( false , false , 0 );
 		}
 	}
 
@@ -716,4 +821,18 @@ String IpAddressToString( uint32_t ipAddress ) {
 	address += ".";
 	address += ( (uint8_t) ipAddress );
 	return address;
+}
+
+void BlinkLED( bool GreenLED , bool RedLED , int BlinkTime ) {
+	if( RedLED == true ) digitalWrite( LED_RED , HIGH );
+	else digitalWrite( LED_RED , LOW );
+	if( GreenLED == true ) digitalWrite( LED_GREEN , HIGH );
+	else digitalWrite( LED_GREEN , LOW );
+	
+	if( BlinkTime != 0 ) { 
+		delay( BlinkTime );
+		digitalWrite( LED_RED , LOW );
+		digitalWrite( LED_GREEN , LOW );
+		delay( BlinkTime );
+	}
 }
