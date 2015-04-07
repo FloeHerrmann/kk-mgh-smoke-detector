@@ -1,215 +1,530 @@
-#include "Panstamp.h"
+/**
+ * Copyright (c) 2011 panStamp <contact@panstamp.com>
+ * 
+ * This file is part of the panStamp project.
+ * 
+ * panStamp  is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * any later version.
+ * 
+ * panStamp is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Lesser General Public License for more details.
+ * 
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with panStamp; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 
+ * USA
+ * 
+ * Author: Daniel Berenguer
+ * Creation date: 03/03/2011
+ */
 
-#define PANSTAMP_TIMEOUT 5000
+#include "panstamp.h"
+#include "commonregs.h"
+#include "calibration.h"
+#include <avr/wdt.h>
 
-Panstamp::Panstamp(void) {
+#define enableIRQ_GDO0()          attachInterrupt(0, isrGDO0event, FALLING);
+#define disableIRQ_GDO0()         detachInterrupt(0);
+
+DEFINE_COMMON_REGINDEX_START()
+DEFINE_COMMON_REGINDEX_END()
+
+/**
+ * Array of registers
+ */
+extern REGISTER* regTable[];
+extern byte regTableSize;
+
+/**
+ * PANSTAMP
+ *
+ * Class constructor
+ */
+PANSTAMP::PANSTAMP(void)
+{
+  statusReceived = NULL;
+  repeater = NULL;  
 }
 
-void Panstamp::init(){
-	Serial2.begin( 57600 );
+/**
+ * enableRepeater
+ *
+ * Enable repeater mode
+ *
+ * 'maxHop'  MAximum repeater count. Zero if omitted
+ */
+void PANSTAMP::enableRepeater(byte maxHop)
+{
+  if (repeater == NULL)
+  {
+    static REPEATER repe;
+    repeater = &repe;
+    repeater->init(maxHop);
+  }
+
+  if (maxHop == 0)
+    repeater->stop();
 }
 
-void Panstamp::clearBuffer(){
-	while( Serial2.available() > 0 ) Serial2.read();
+/**
+ * getRegister
+ *
+ * Return pointer to register with ID = regId
+ *
+ * 'regId'  Register ID
+ */
+REGISTER * getRegister(byte regId)
+{
+  if (regId >= regTableSize)
+    return NULL;
+
+  return regTable[regId]; 
 }
 
-bool Panstamp::switchToCommandMode(){
-	this->clearBuffer();
+/**
+ * isrGDO0event
+ *
+ * Event on GDO0 pin (INT0)
+ */
+void isrGDO0event(void)
+{
+  // Disable interrupt
+  disableIRQ_GDO0();
 
-	uint64_t start = millis();
-	String response = "";
+  if (panstamp.cc1101.rfState == RFSTATE_RX)
+  {
+    static CCPACKET ccPacket;
+    static SWPACKET swPacket;
+    REGISTER *reg;
+    bool eval = true;
 
-	Serial2.print( "+++" );
+    if (panstamp.cc1101.receiveData(&ccPacket) > 0)
+    {
+      if (ccPacket.crc_ok)
+      {
+        swPacket = SWPACKET(ccPacket);
 
-	while( (millis()-start) < PANSTAMP_TIMEOUT ) {
-		if( Serial2.available() > 0 ) {
-			response += (char)Serial2.read();
-			if( response.indexOf( "OK-Command mode") != -1 ) return true;
-		}
-	}
-	return false;
+        #ifdef SWAP_EXTENDED_ADDRESS
+        if (swPacket.addrType == SWAPADDR_EXTENDED)
+        #else
+        if (swPacket.addrType == SWAPADDR_SIMPLE)
+        #endif
+        {
+          // Repeater enabled?
+          if (panstamp.repeater != NULL)
+            panstamp.repeater->packetHandler(&swPacket);
+
+          // Smart encryption locally enabled?
+          if (panstamp.security & 0x02)
+          {
+            // OK, then incoming packets must be encrypted too
+            if (!(swPacket.security & 0x02))
+              eval = false;
+          }
+        }
+        else
+          eval = false;
+
+        if (eval)
+        {
+          // Function
+          switch(swPacket.function)
+          {
+            case SWAPFUNCT_CMD:
+              // Command not addressed to us?
+              if (swPacket.destAddr != panstamp.swapAddress)
+                break;
+              // Current version does not support data recording mode
+              // so destination address and register address must be the same
+              if (swPacket.destAddr != swPacket.regAddr)
+                break;
+              // Valid register?
+              if ((reg = getRegister(swPacket.regId)) == NULL)
+                break;
+
+              // Anti-playback security enabled?
+              if (panstamp.security & 0x01)
+              {
+                // Check received nonce
+                if (panstamp.nonce != swPacket.nonce)
+                {
+                  // Nonce missmatch. Transmit correct nonce.
+                  reg = getRegister(REGI_SECUNONCE);
+                  reg->sendSwapStatus();
+                  break;
+                }
+              }
+              // Filter incorrect data lengths
+              if (swPacket.value.length == reg->length)
+                reg->setData(swPacket.value.data);
+              else
+                reg->sendSwapStatus();
+              break;
+            case SWAPFUNCT_QRY:
+              // Only Product Code can be broadcasted
+              if (swPacket.destAddr == SWAP_BCAST_ADDR)
+              {
+                if (swPacket.regId != REGI_PRODUCTCODE)
+                  break;
+              }
+              // Query not addressed to us?
+              else if (swPacket.destAddr != panstamp.swapAddress)
+                break;
+              // Current version does not support data recording mode
+              // so destination address and register address must be the same
+              if (swPacket.destAddr != swPacket.regAddr)
+                break;
+              // Valid register?
+              if ((reg = getRegister(swPacket.regId)) == NULL)
+                break;
+              reg->getData();
+              break;
+            case SWAPFUNCT_STA:
+              // User callback function declared?
+              if (panstamp.statusReceived != NULL)
+                panstamp.statusReceived(&swPacket);
+              break;
+            default:
+              break;
+          }
+        }
+      }
+    }
+  }
+  // Enable interrupt
+  enableIRQ_GDO0();
 }
 
-bool Panstamp::switchToDataMode(){
-	this->clearBuffer();
+/**
+ * init
+ * 
+ * Initialize panStamp board
+ * 
+ * 'freq'	New carrier frequency
+ */
+void PANSTAMP::init(byte freq) 
+{
+  int i;
 
-	uint64_t start = millis();
-	String response = "";
+  // Calibrate internal RC oscillator
+  rtcCrystal = rcOscCalibrate();
 
-	Serial2.print( "ATO\r" );
+  // Intialize registers
+  for(i=0 ; i<regTableSize ; i++)
+    regTable[i]->init();
 
-	while( (millis()-start) < PANSTAMP_TIMEOUT ) {
-		if( Serial2.available() > 0 ) {
-			response += (char)Serial2.read();
-			if( response.indexOf( "OK-Data mode") != -1 ) return true;
-		}
-	}
-	return false;
+  // Setup CC1101
+  cc1101.init(freq);
+
+  // Security disabled by default
+  security = 0;
+
+  delayMicroseconds(50);
+
+  // Enter RX state
+  cc1101.setRxState();
+
+  // Attach callback function for GDO0 (INT0)
+  enableIRQ_GDO0();
+
+  // Default values
+  nonce = 0;
+  systemState = SYSTATE_RXON;
 }
 
-bool Panstamp::setAddress( String value ){
-	this->clearBuffer();
+/**
+ * reset
+ * 
+ * Reset panStamp
+ */
+void PANSTAMP::reset() 
+{
+  // Tell the network that our panStamp is restarting
+  systemState = SYSTATE_RESTART;
+  getRegister(REGI_SYSSTATE)->sendSwapStatus();
 
-	uint64_t start = millis();
-	String response = "";
-
-	String command = "ATDA=";
-	command = command + value;
-	command = command + "\r";
-
-	Serial2.print( command );
-
-	while( (millis()-start) < PANSTAMP_TIMEOUT ) {
-		if( Serial2.available() > 0 ) {
-			response += (char)Serial2.read();
-			if( response.indexOf( "OK") != -1 ) return true;
-		}
-	}
-	return false;
+  // Reset panStamp
+  wdt_disable();  
+  wdt_enable(WDTO_15MS);
+  while (1) {}
 }
 
-bool Panstamp::setSynchronizationWord( String value ){
-	this->clearBuffer();
-
-	uint64_t start = millis();
-	String response = "";
-	
-	String command = "ATSW=";
-	command = command + value;
-	command = command + "\r";
-
-	Serial2.print( command );
-
-	while( (millis()-start) < PANSTAMP_TIMEOUT ) {
-		if( Serial2.available() > 0 ) {
-			response += (char)Serial2.read();
-			if( response.indexOf( "OK") != -1 ) return true;
-		}
-	}
-	return false;
+/**
+ * wakeUp
+ *
+ * Wake from sleep mode
+ */
+void PANSTAMP::wakeUp(void)
+{
+  rtc.wakeUp();
+  systemState = SYSTATE_RXON;
 }
 
-bool Panstamp::attention(){
-	this->clearBuffer();
+/**
+ * goToSleep
+ *
+ * Sleep whilst in power-down mode. This function currently uses sleepWd or
+ * sleepRtc in a loop
+ */
+void PANSTAMP::goToSleep(void)
+{
+  // Get the amount of seconds to sleep from the internal register
+  int intInterval = txInterval;
+  int i, loops;
+  byte minTime;
+  
+  // No interval? Then return
+  if (intInterval == 0)
+    return;
 
-	uint64_t start = millis();
-	String response = "";
+  // Search the maximum sleep time passed as argument to sleepWd that best
+  // suits our desired interval
+  if (intInterval % 8 == 0)
+  {
+    loops = intInterval / 8;
+    
+    if (rtcCrystal)
+      minTime = RTC_8S;
+    else
+      minTime = WDTO_8S;
+  }
+  else if (intInterval % 4 == 0)
+  {
+    if (rtcCrystal)
+    {
+      loops = intInterval / 2;
+      minTime = RTC_2S;
+    }
+    else
+    {
+      loops = intInterval / 4;
+      minTime = WDTO_4S;
+    }
+  }
+  else if (intInterval % 2 == 0)
+  {
+    loops = intInterval / 2;
+    if (rtcCrystal)    
+      minTime = RTC_2S;
+    else
+      minTime = WDTO_2S;
+  }
+  else
+  {
+    loops = intInterval;
+    if (rtcCrystal)
+      minTime = RTC_1S;
+    else
+      minTime = WDTO_1S;
+  }
 
-	Serial2.print( "AT\r" );
+  systemState = SYSTATE_RXOFF;
 
-	while( (millis()-start) < PANSTAMP_TIMEOUT ) {
-		if( Serial2.available() > 0 ) {
-			response += (char)Serial2.read();
-			if( response.indexOf( "OK") != -1 ) return true;
-		}
-	}
-	return false;
+  // Power-down CC1101
+  cc1101.setPowerDownState();
+
+  // Sleep
+  for (i=0 ; i<loops ; i++)
+  {
+    // Exit sleeping loop?
+    if (systemState == SYSTATE_RXON)
+      break;
+
+    if (rtcCrystal)
+      rtc.sleepRtc(minTime);
+    else
+      rtc.sleepWd(minTime);
+  }
+
+  // Reset CC1101 IC
+  cc1101.wakeUp();
+
+  // set system state to RF Rx ON
+  systemState = SYSTATE_RXON;
 }
 
-bool Panstamp::reset(){
-	this->clearBuffer();
+void PANSTAMP::sleepWell( int intInterval )
+{
+  int i, loops;
+  byte minTime;
+  
+  // No interval? Then return
+  if (intInterval == 0)
+    return;
 
-	uint64_t start = millis();
-	String response = "";
+  // Search the maximum sleep time passed as argument to sleepWd that best
+  // suits our desired interval
+  if (intInterval % 8 == 0)
+  {
+    loops = intInterval / 8;
+    
+    if (rtcCrystal)
+      minTime = RTC_8S;
+    else
+      minTime = WDTO_8S;
+  }
+  else if (intInterval % 4 == 0)
+  {
+    if (rtcCrystal)
+    {
+      loops = intInterval / 2;
+      minTime = RTC_2S;
+    }
+    else
+    {
+      loops = intInterval / 4;
+      minTime = WDTO_4S;
+    }
+  }
+  else if (intInterval % 2 == 0)
+  {
+    loops = intInterval / 2;
+    if (rtcCrystal)    
+      minTime = RTC_2S;
+    else
+      minTime = WDTO_2S;
+  }
+  else
+  {
+    loops = intInterval;
+    if (rtcCrystal)
+      minTime = RTC_1S;
+    else
+      minTime = WDTO_1S;
+  }
 
-	Serial2.print( "ATZ\r" );
+  systemState = SYSTATE_RXOFF;
 
-	while( (millis()-start) < PANSTAMP_TIMEOUT ) {
-		if( Serial2.available() > 0 ) {
-			response += (char)Serial2.read();
-			if( response.indexOf( "OK") != -1 ) return true;
-		}
-	}
-	return false;
+  // Power-down CC1101
+  cc1101.setPowerDownState();
+
+  // Sleep
+  for (i=0 ; i<loops ; i++)
+  {
+    // Exit sleeping loop?
+    if (systemState == SYSTATE_RXON)
+      break;
+
+    if (rtcCrystal)
+      rtc.sleepRtc(minTime);
+    else
+      rtc.sleepWd(minTime);
+  }
+
+  // Reset CC1101 IC
+  cc1101.wakeUp();
+
+  // set system state to RF Rx ON
+  systemState = SYSTATE_RXON;
 }
 
-String Panstamp::synchronizationWord(){
-	this->clearBuffer();
-
-	uint64_t start = millis();
-	String response = "";
-
-	Serial2.print( "ATSW?\r" );
-	while( (millis()-start) < PANSTAMP_TIMEOUT ) {
-		if( Serial2.available() > 0 ) {
-			char c = Serial2.read();
-			if( 13 == (int)c && response.length() > 3 ) {
-				response.replace( "\r" , "" );
-				response.replace( "\n" , "" );
-				return response;
-			} else {
-				response += c;
-			}
-		}
-	}
-	return "";
+/**
+ * enterSystemState
+ *
+ * Enter system state
+ *
+ * 'state'  New system state
+ */
+void PANSTAMP::enterSystemState(SYSTATE state)
+{
+  // Enter SYNC mode (full Rx mode)
+  byte newState[] = {state};
+  regTable[REGI_SYSSTATE]->setData(newState);
 }
 
-String Panstamp::firmwareVersion(){
-	this->clearBuffer();
+/**
+ * getInternalTemp
+ * 
+ * Read internal (ATMEGA328 only) temperature sensor
+ * Reference: http://playground.arduino.cc/Main/InternalTemperatureSensor
+ * 
+ * Return:
+ * 	Temperature in degrees Celsius
+ */
+long PANSTAMP::getInternalTemp(void) 
+{
+  unsigned int wADC;
+  long t;
 
-	uint64_t start = millis();
-	String response = "";
+  // The internal temperature has to be used
+  // with the internal reference of 1.1V.
+  // Channel 8 can not be selected with
+  // the analogRead function yet.
 
-	Serial2.print( "ATFV?\r" );
-	while( (millis()-start) < PANSTAMP_TIMEOUT ) {
-		if( Serial2.available() > 0 ) {
-			char c = Serial2.read();
-			if( 13 == (int)c && response.length() > 3 ) {
-				response.replace( "\r" , "" );
-				response.replace( "\n" , "" );
-				return response;
-			} else {
-				response += c;
-			}
-		}
-	}
-	return "";
+  // Set the internal reference and mux.
+  ADMUX = (_BV(REFS1) | _BV(REFS0) | _BV(MUX3));
+  ADCSRA |= _BV(ADEN);  // enable the ADC
+
+  delay(20);            // wait for voltages to become stable.
+
+  ADCSRA |= _BV(ADSC);  // Start the ADC
+
+  // Detect end-of-conversion
+  while (bit_is_set(ADCSRA,ADSC));
+
+  // Reading register "ADCW" takes care of how to read ADCL and ADCH.
+  wADC = ADCW;
+
+  // The offset of 324.31 could be wrong. It is just an indication.
+  t = (wADC - 324.31 ) / 1.22;
+
+  // The returned temperature is in degrees Celcius.
+  return (t);
 }
 
-String Panstamp::hardwareVersion(){
-	this->clearBuffer();
-
-	uint64_t start = millis();
-	String response = "";
-
-	Serial2.print( "ATHV?\r" );
-	while( (millis()-start) < PANSTAMP_TIMEOUT ) {
-		if( Serial2.available() > 0 ) {
-			char c = Serial2.read();
-			if( 13 == (int)c && response.length() > 3 ) {
-				response.replace( "\r" , "" );
-				response.replace( "\n" , "" );
-				return response;
-			} else {
-				response += c;
-			}
-		}
-	}
-	return "";
+/**
+ * setSmartPassword
+ * 
+ * Set Smart Encryption password
+ * 
+ * 'password'	Encryption password
+ */
+void PANSTAMP::setSmartPassword(byte* password)
+{
+  // Save password
+  memcpy(encryptPwd, password, sizeof(encryptPwd));
+  // Enable Smart Encryption
+  security |= 0x02;
 }
 
-String Panstamp::address(){
-
-	uint64_t start = millis();
-	String response = "";
-
-	this->clearBuffer();
-	Serial2.print( "ATDA?\r" );
-
-	while( (millis()-start) < PANSTAMP_TIMEOUT ) {
-		if( Serial2.available() > 0 ) {
-			char c = Serial2.read();
-			if( 13 == (int)c && response.length() > 2 ) {
-				response.replace( "\r" , "" );
-				response.replace( "\n" , "" );
-				return response;
-			} else {
-				response += c;
-			}
-		}
-	}
-	return "";
+/**
+ * enableRfRx
+ * 
+ * Enable or disable RF reception
+ *
+ * @param ena Enable if true. Disable otherwise
+ */
+void PANSTAMP::enableRfRx(bool ena)
+{
+  if (ena)
+    enableIRQ_GDO0()
+  else
+    disableIRQ_GDO0();
 }
 
-Panstamp panstamp;
+/**
+ * updateEeprom
+ *
+ * Prepare EEPROM for extended addresses in case it is not yet
+ */
+/*
+void PANSTAMP::updateEeprom(void)
+{
+  unsigned int addr;
+  unsigned char b;
+
+
+  b = EEPROM.read(EEPROM_TX_INTERVAL);
+  if ((b != 0x00) && (b != 0xFF))
+  EEPROM.write(addr+1, b);
+}
+*/
+/**
+ * Pre-instantiate PANSTAMP object
+ */
+PANSTAMP panstamp;
+
